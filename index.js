@@ -8,13 +8,17 @@ import { Client } from "@notionhq/client";
 const app = express();
 app.use(cors());
 const port = process.env.PORT || 3000;
+
+// 初始化 Notion 客户端
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
+// 创建 MCP Server
 const server = new Server(
   { name: "notion-sse-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
 
+// 注册工具
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -23,8 +27,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {
-          pageId: { type: "string", description: "Notion页面的ID，从网址里获取" },
-          content: { type: "string", description: "要写入的具体内容" }
+          pageId: { type: "string", description: "Notion页面的ID" },
+          content: { type: "string", description: "要写入的内容" }
         },
         required: ["pageId", "content"]
       }
@@ -32,6 +36,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ]
 }));
 
+// 工具执行逻辑
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "append_to_notion_page") {
     const { pageId, content } = request.params.arguments;
@@ -42,46 +47,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: content } }] } }
         ]
       });
-      return { content: [{ type: "text", text: `成功写入 Notion` }] };
+      return { content: [{ type: "text", text: `成功写进 Notion 啦！` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `写入失败: ${error.message}` }] };
     }
   }
-  throw new Error("没找到工具");
+  throw new Error("工具未找到");
 });
 
-// 【核心修改1】：使用 Map 存储多会话，符合标准云端架构
+// 用于管理多会话的 Map
 const transports = new Map();
 
-app.get("/sse", async (req, res) => {
-  // 生成标准的 SSE 端点
+// 【修改重点】：这里改成了 /mcp，匹配你那个运行成功的环境
+app.get("/mcp", async (req, res) => {
+  console.log("收到连接请求...");
+  
+  // 创建传输实例，并将消息路由指向下面的 /messages
   const transport = new SSEServerTransport("/messages", res);
   
-  // 记录该会话分配的 sessionId
+  // 存储会话
   transports.set(transport.sessionId, transport);
   
-  // 客户端连接断开时，按照规范清理内存
   res.on("close", () => {
+    console.log(`会话 ${transport.sessionId} 已断开`);
     transports.delete(transport.sessionId);
   });
   
   await server.connect(transport);
+  console.log(`Claude 已通过 /mcp 成功连接`);
 });
 
-// 【核心修改2】：移除 express.json()，避免破坏 SDK 原生格式
+// 处理消息的 POST 接口
 app.post("/messages", async (req, res) => {
-  // 【核心修改3】：严格根据 URL 传入的 sessionId 提取对应通道
   const sessionId = req.query.sessionId;
   const transport = transports.get(sessionId);
   
   if (!transport) {
-    return res.status(404).send("Session not found");
+    return res.status(404).send("会话不存在");
   }
   
-  // 将原生的请求转交给 transport 处理
   await transport.handlePostMessage(req, res);
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`MCP 标准规范版服务器运行中，端口: ${port}`);
+  console.log(`服务已启动，请尝试访问：/mcp`);
 });
