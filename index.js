@@ -9,24 +9,25 @@ const app = express();
 app.use(cors());
 const port = process.env.PORT || 3000;
 
-// 【请在这里填入你的钥匙】
-const MY_NOTION_TOKEN = "这里直接填入你那串ntn_开头的钥匙"; 
-const notion = new Client({ auth: MY_NOTION_TOKEN });
+// 【核心修复】：不再用写死的字符串，回归标准的环境变量读取
+const notionToken = process.env.NOTION_API_KEY;
+const notion = new Client({ auth: notionToken });
 
-// 用于存储每个会话对应的 transport
-const sessions = new Map();
-
-// 处理连接请求的路由
+// 每一个连接进来，我们都给它现场生成一个独立的 Server 实例，防止“Already connected”报错
 app.get("/mcp", async (req, res) => {
-  console.log("收到新的连接请求，正在创建独立服务器实例...");
+  if (!notionToken) {
+    console.error("错误：Railway 环境变量 NOTION_API_KEY 未找到！");
+    return res.status(500).send("Server configuration error: missing API key");
+  }
 
-  // 1. 按照官方建议，为每个连接创建一个全新的 Server 实例，彻底解决“Already connected”报错
+  console.log("收到连接，正在启动独立 MCP Server...");
+
   const server = new Server(
-    { name: "notion-mcp-anzhi", version: "1.1.0" },
+    { name: "notion-mcp-anzhi", version: "1.2.0" },
     { capabilities: { tools: {} } }
   );
 
-  // 2. 在这个独立的实例上注册工具
+  // 注册工具：追加写入和按时间节点读取
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
@@ -40,7 +41,7 @@ app.get("/mcp", async (req, res) => {
       },
       {
         name: "read_latest_time_nodes",
-        description: "精准读取底部 N 个 2026.04.05 格式的内容",
+        description: "从底部向上读取 N 个 2026.04.05 格式的时间节点内容",
         inputSchema: {
           type: "object",
           properties: { pageId: { type: "string" }, nodeCount: { type: "number", default: 3 } },
@@ -50,7 +51,7 @@ app.get("/mcp", async (req, res) => {
     ]
   }));
 
-  // 3. 实现具体逻辑
+  // 实现工具逻辑
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     
@@ -84,31 +85,32 @@ app.get("/mcp", async (req, res) => {
     }
   });
 
-  // 4. 创建传输通道并建立连接
   const transport = new SSEServerTransport("/messages", res);
-  
-  // 将这个 session 存起来，方便后面的 POST 接口找到
-  sessions.set(transport.sessionId, transport);
-  
+  // 为每个会话创建独立的处理器
+  const transportHandler = async (req, res) => {
+    await transport.handlePostMessage(req, res);
+  };
+
+  // 将处理函数存入 app.locals 以便 POST 路由调用（简单处理方案）
+  app.set(`handler_${transport.sessionId}`, transportHandler);
+
   res.on("close", () => {
-    console.log(`会话 ${transport.sessionId} 已关闭`);
-    sessions.delete(transport.sessionId);
+    app.set(`handler_${transport.sessionId}`, null);
   });
 
   await server.connect(transport);
 });
 
-// 处理后续消息的路由
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
-  const transport = sessions.get(sessionId);
-  if (transport) {
-    await transport.handlePostMessage(req, res);
+  const handler = app.get(`handler_${sessionId}`);
+  if (handler) {
+    await handler(req, res);
   } else {
     res.status(404).send("Session not found");
   }
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`【终极修复版】服务已启动，端口: ${port}`);
+  console.log(`服务启动，正在通过环境变量读取 Token。端口: ${port}`);
 });
