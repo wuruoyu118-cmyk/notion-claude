@@ -52,10 +52,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 let transport;
 app.get("/sse", async (req, res) => {
+  // 【本次核心修复】：如果发现Claude重复连接，先调用 close() 清理旧的连接，防止占座崩溃
+  if (transport) {
+    console.log("检测到重新连接，正在清理旧连接...");
+    try {
+      await server.close();
+    } catch (e) {}
+  }
+
   const messageEndpoint = `https://${req.headers.host}/messages`;
   transport = new SSEServerTransport(messageEndpoint, res);
   await server.connect(transport);
-  console.log("Claude 已连接 SSE");
+  console.log("Claude 已成功连接 SSE");
 });
 
 app.post("/messages", express.json(), async (req, res) => {
@@ -66,7 +74,6 @@ app.post("/messages", express.json(), async (req, res) => {
   }
 });
 
-// 【核心修改】：绑定 0.0.0.0 适应 Railway 容器
 app.listen(port, "0.0.0.0", () => {
   console.log(`运行中，端口: ${port}`);
 });
