@@ -9,7 +9,6 @@ const app = express();
 app.use(cors());
 const port = process.env.PORT || 3000;
 
-// 【请务必在这里填入你的钥匙】
 const MY_NOTION_TOKEN = "这里填入你那串ntn_开头的钥匙"; 
 const notion = new Client({ auth: MY_NOTION_TOKEN });
 
@@ -18,12 +17,11 @@ const server = new Server(
   { capabilities: { tools: {} } }
 );
 
-// --- 1. 注册工具 ---
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "append_to_notion_page",
-      description: "向指定的 Notion 页面追加内容（写在最下面）",
+      description: "向指定的 Notion 页面追加内容",
       inputSchema: {
         type: "object",
         properties: {
@@ -35,7 +33,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: "read_latest_time_nodes",
-      description: "从底部向上读取最近 N 个时间点（格式如 2026.04.05）的内容",
+      description: "【精准版】仅读取底部最近 N 个时间点（2026.04.05）的内容",
       inputSchema: {
         type: "object",
         properties: {
@@ -48,7 +46,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ]
 }));
 
-// --- 2. 工具执行逻辑 ---
+const getBlockText = (block) => {
+  const type = block.type;
+  const content = block[type];
+  if (content && content.rich_text) {
+    return content.rich_text.map(rt => rt.plain_text).join('');
+  }
+  return "";
+};
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
@@ -57,12 +63,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       await notion.blocks.children.append({
         block_id: args.pageId,
         children: [{
-          object: 'block',
-          type: 'paragraph',
+          object: 'block', type: 'paragraph',
           paragraph: { rich_text: [{ type: 'text', text: { content: args.content } }] }
         }]
       });
-      return { content: [{ type: "text", text: `已成功存入 Notion。` }] };
+      return { content: [{ type: "text", text: `成功写进 Notion 底部。` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `写入失败: ${error.message}` }] };
     }
@@ -70,47 +75,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "read_latest_time_nodes") {
     try {
-      // 1. 获取最近的 100 个 block（如果信件很多，可以调大）
-      const response = await notion.blocks.children.list({
-        block_id: args.pageId,
-        page_size: 100 
-      });
-      const allBlocks = response.results;
+      let allBlocks = [];
+      let cursor = undefined;
 
-      // 2. 【精准雷达】：识别 2026.04.05 这种格式的行
-      const isTimeNode = (block) => {
-        const type = block.type;
-        const text = block[type]?.rich_text?.[0]?.plain_text || "";
-        // 正则表达式匹配：4位数字.2位数字.2位数字
-        const timePattern = /\d{4}\.\d{2}\.\d{2}/; 
-        return timePattern.test(text);
-      };
+      // 1. 快速定位到底部（最多追溯最近 200 个块，通常覆盖小说最近几章足够了）
+      let fetchCount = 0;
+      do {
+        const response = await notion.blocks.children.list({
+          block_id: args.pageId,
+          start_cursor: cursor,
+          page_size: 100
+        });
+        allBlocks.push(...response.results);
+        cursor = response.next_cursor;
+        fetchCount++;
+      } while (cursor && fetchCount < 2);
 
-      // 3. 从底部向上检索
-      let nodesFound = 0;
-      let targetBlocks = [];
-      const targetCount = args.nodeCount || 3;
+      const timePattern = /\d{4}\.\d{2}\.\d{2}/; 
+      let nodeIndices = [];
 
-      for (let i = allBlocks.length - 1; i >= 0; i--) {
-        const block = allBlocks[i];
-        targetBlocks.unshift(block); // 维持顺序：把读到的块塞到列表最前面
-
-        if (isTimeNode(block)) {
-          nodesFound++;
-          if (nodesFound >= targetCount) break; // 找够了 N 个节点就停下
+      // 2. 找到所有时间节点的位置
+      for (let i = 0; i < allBlocks.length; i++) {
+        if (timePattern.test(getBlockText(allBlocks[i]))) {
+          nodeIndices.push(i);
         }
       }
 
-      // 4. 拼装成文本返回
-      const textResult = targetBlocks
-        .map(b => b[b.type]?.rich_text?.map(rt => rt.plain_text).join('') || "")
+      // 3. 【核心修复】：只截取最后 N 个节点开始的部分
+      const targetCount = args.nodeCount || 3;
+      if (nodeIndices.length === 0) {
+        return { content: [{ type: "text", text: "页面中没有找到 2026.04.05 格式的时间点。" }] };
+      }
+
+      // 确定起始位置：如果节点够多，就从倒数第 N 个节点开始切；不够多就从第 1 个开始
+      const startIndex = nodeIndices[Math.max(0, nodeIndices.length - targetCount)];
+      
+      // 4. 只把这一小段转换成文字
+      const resultText = allBlocks.slice(startIndex)
+        .map(b => getBlockText(b))
         .filter(t => t.trim().length > 0)
         .join('\n\n');
 
       return {
         content: [{ 
           type: "text", 
-          text: textResult || "未找到符合 2026.04.05 格式的时间节点。" 
+          text: `【已为你读取底部最近的 ${targetCount} 个时间点内容】：\n\n${resultText}` 
         }]
       };
     } catch (error) {
@@ -120,14 +129,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error("工具未找到");
 });
 
-// --- 3. 连接逻辑 ---
 const transports = new Map();
 app.get("/mcp", async (req, res) => {
   const transport = new SSEServerTransport("/messages", res);
   transports.set(transport.sessionId, transport);
   res.on("close", () => transports.delete(transport.sessionId));
   await server.connect(transport);
-  console.log("【2026.04.05 专用识别版】已上线");
 });
 
 app.post("/messages", async (req, res) => {
@@ -138,5 +145,5 @@ app.post("/messages", async (req, res) => {
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`服务启动，正在监听端口: ${port}`);
+  console.log(`精准读取服务器运行中...`);
 });
