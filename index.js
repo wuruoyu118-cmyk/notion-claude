@@ -42,7 +42,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           { object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: content } }] } }
         ]
       });
-      return { content: [{ type: "text", text: `成功写进 Notion 啦！` }] };
+      return { content: [{ type: "text", text: `成功写入 Notion` }] };
     } catch (error) {
       return { content: [{ type: "text", text: `写入失败: ${error.message}` }] };
     }
@@ -50,30 +50,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   throw new Error("没找到工具");
 });
 
-let transport;
-app.get("/sse", async (req, res) => {
-  // 【本次核心修复】：如果发现Claude重复连接，先调用 close() 清理旧的连接，防止占座崩溃
-  if (transport) {
-    console.log("检测到重新连接，正在清理旧连接...");
-    try {
-      await server.close();
-    } catch (e) {}
-  }
+// 【核心修改1】：使用 Map 存储多会话，符合标准云端架构
+const transports = new Map();
 
-  const messageEndpoint = `https://${req.headers.host}/messages`;
-  transport = new SSEServerTransport(messageEndpoint, res);
+app.get("/sse", async (req, res) => {
+  // 生成标准的 SSE 端点
+  const transport = new SSEServerTransport("/messages", res);
+  
+  // 记录该会话分配的 sessionId
+  transports.set(transport.sessionId, transport);
+  
+  // 客户端连接断开时，按照规范清理内存
+  res.on("close", () => {
+    transports.delete(transport.sessionId);
+  });
+  
   await server.connect(transport);
-  console.log("Claude 已成功连接 SSE");
 });
 
-app.post("/messages", express.json(), async (req, res) => {
-  if (transport) {
-    await transport.handlePostMessage(req, res);
-  } else {
-    res.status(503).send("还没连接上");
+// 【核心修改2】：移除 express.json()，避免破坏 SDK 原生格式
+app.post("/messages", async (req, res) => {
+  // 【核心修改3】：严格根据 URL 传入的 sessionId 提取对应通道
+  const sessionId = req.query.sessionId;
+  const transport = transports.get(sessionId);
+  
+  if (!transport) {
+    return res.status(404).send("Session not found");
   }
+  
+  // 将原生的请求转交给 transport 处理
+  await transport.handlePostMessage(req, res);
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`运行中，端口: ${port}`);
+  console.log(`MCP 标准规范版服务器运行中，端口: ${port}`);
 });
