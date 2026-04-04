@@ -9,16 +9,26 @@ const app = express();
 app.use(cors());
 const port = process.env.PORT || 3000;
 
-// 初始化 Notion 客户端
-const notion = new Client({ auth: process.env.NOTION_API_KEY });
+// 【开机自检】：检查环境变量是否正确读取
+console.log("--- 服务器启动检查 ---");
+const token = process.env.NOTION_API_KEY;
 
-// 创建 MCP Server
+if (!token) {
+  console.error("【致命错误】：未找到 NOTION_API_KEY！请检查 Railway 的 Variables 设置。");
+} else {
+  // 只打印前几个字母和长度，确保安全的同时确认它读到了
+  console.log(`【钥匙检查】：已读到钥匙，开头是: ${token.substring(0, 7)}... 长度为: ${token.length}`);
+}
+console.log("--- 检查结束 ---");
+
+// 初始化 Notion 客户端
+const notion = new Client({ auth: token });
+
 const server = new Server(
   { name: "notion-sse-mcp", version: "1.0.0" },
   { capabilities: { tools: {} } }
 );
 
-// 注册工具
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
@@ -36,7 +46,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ]
 }));
 
-// 工具执行逻辑
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name === "append_to_notion_page") {
     const { pageId, content } = request.params.arguments;
@@ -49,46 +58,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
       return { content: [{ type: "text", text: `成功写进 Notion 啦！` }] };
     } catch (error) {
-      return { content: [{ type: "text", text: `写入失败: ${error.message}` }] };
+      // 这里的报错会直接传回给 Claude，让我们看到原因
+      return { content: [{ type: "text", text: `Notion 报错: ${error.message}` }] };
     }
   }
   throw new Error("工具未找到");
 });
 
-// 用于管理多会话的 Map
 const transports = new Map();
 
-// 【修改重点】：这里改成了 /mcp，匹配你那个运行成功的环境
 app.get("/mcp", async (req, res) => {
-  console.log("收到连接请求...");
-  
-  // 创建传输实例，并将消息路由指向下面的 /messages
   const transport = new SSEServerTransport("/messages", res);
-  
-  // 存储会话
   transports.set(transport.sessionId, transport);
-  
   res.on("close", () => {
-    console.log(`会话 ${transport.sessionId} 已断开`);
     transports.delete(transport.sessionId);
   });
-  
   await server.connect(transport);
-  console.log(`Claude 已通过 /mcp 成功连接`);
+  console.log(`Claude 已成功连接`);
 });
 
-// 处理消息的 POST 接口
 app.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = transports.get(sessionId);
-  
-  if (!transport) {
-    return res.status(404).send("会话不存在");
-  }
-  
+  if (!transport) return res.status(404).send("会话不存在");
   await transport.handlePostMessage(req, res);
 });
 
 app.listen(port, "0.0.0.0", () => {
-  console.log(`服务已启动，请尝试访问：/mcp`);
+  console.log(`服务正在 0.0.0.0:${port} 运行`);
 });
