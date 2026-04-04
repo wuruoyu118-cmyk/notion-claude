@@ -4,12 +4,16 @@
   "description": "Notion MCP Server for Claude",
   "type": "module",
   "main": "index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.1",
     "@notionhq/client": "^2.2.14",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
   }
 }

@@ -1,10 +1,12 @@
 import express from "express";
+import cors from "cors";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Client } from "@notionhq/client";
 
 const app = express();
+app.use(cors());
 const port = process.env.PORT || 3000;
 const notion = new Client({ auth: process.env.NOTION_API_KEY });
 
@@ -50,8 +52,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 let transport;
 app.get("/sse", async (req, res) => {
-  transport = new SSEServerTransport("/messages", res);
+  const messageEndpoint = `https://${req.headers.host}/messages`;
+  transport = new SSEServerTransport(messageEndpoint, res);
   await server.connect(transport);
+  console.log("Claude 已连接 SSE");
 });
 
 app.post("/messages", express.json(), async (req, res) => {
@@ -62,6 +66,7 @@ app.post("/messages", express.json(), async (req, res) => {
   }
 });
 
-app.listen(port, () => {
+// 【核心修改】：绑定 0.0.0.0 适应 Railway 容器
+app.listen(port, "0.0.0.0", () => {
   console.log(`运行中，端口: ${port}`);
 });
