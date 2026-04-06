@@ -13,6 +13,7 @@ const notionToken = process.env.NOTION_API_KEY;
 const notion = new Client({ auth: notionToken });
 const transportSessions = new Map();
 
+// 提取文字的通用工具函数
 const getTxt = (b) => {
     const type = b.type;
     return b[type]?.rich_text?.map(rt => rt.plain_text).join('') || "";
@@ -20,7 +21,7 @@ const getTxt = (b) => {
 
 app.get("/mcp", async (req, res) => {
     const server = new Server(
-        { name: "notion-mcp-advanced", version: "2.1.0" },
+        { name: "notion-mcp-advanced", version: "2.2.0" },
         { capabilities: { tools: {} } }
     );
 
@@ -38,13 +39,13 @@ app.get("/mcp", async (req, res) => {
             },
             {
                 name: "read_latest_time_nodes",
-                description: "【局部读取模式】读取最近 N 个时间节点内容（已支持万能日期格式识别）。",
+                description: "【局部读取模式】读取最近 N 个时间节点内容。支持：2026.04.06、2026年4月6日、4月6日等多种格式。",
                 inputSchema: { type: "object", properties: { pageId: { type: "string" }, nodeCount: { type: "number", default: 3 } }, required: ["pageId"] }
             },
             {
                 name: "read_database_rows",
-                description: "传入数据库/表格的页面ID，返回数据库里所有行的内容（包含日期、步数等）。",
-                inputSchema: { type: "object", properties: { pageId: { type: "string", description: "需要查询的数据库页面 ID" } }, required: ["pageId"] }
+                description: "【表格模式】读取数据库/表格的所有行，自动识别各种日期格式的内容。",
+                inputSchema: { type: "object", properties: { pageId: { type: "string", description: "需要查询的数据库 ID" } }, required: ["pageId"] }
             }
         ]
     }));
@@ -74,16 +75,20 @@ app.get("/mcp", async (req, res) => {
             return { content: [{ type: "text", text: fullText || "页面内容为空。" }] };
         }
 
+        // --- 模式二：升级版局部读取（支持中文日期） ---
         if (name === "read_latest_time_nodes") {
             const response = await notion.blocks.children.list({ block_id: args.pageId, page_size: 100 });
             const allBlocks = response.results;
             
-            // ！！！已经替换好的：万能日期识别代码 ！！！
+            // 🚀 这里是重点：支持 . / - 以及 年月日 等各种日期分隔符
             const timePattern = /(\d{4}[-./年]\d{1,2}[-./月]\d{1,2}日?)|(\d{1,2}月\d{1,2}日)/; 
             
             let nodeIndices = [];
             for (let i = 0; i < allBlocks.length; i++) {
-                if (timePattern.test(getTxt(allBlocks[i]))) nodeIndices.push(i);
+                const blockText = getTxt(allBlocks[i]);
+                if (timePattern.test(blockText)) {
+                    nodeIndices.push(i);
+                }
             }
             const count = args.nodeCount || 3;
             let startPos = allBlocks.length > 30 ? allBlocks.length - 30 : 0;
@@ -94,15 +99,12 @@ app.get("/mcp", async (req, res) => {
             return { content: [{ type: "text", text: sliceText }] };
         }
 
+        // --- 模式三：数据库抓取（全自动识别） ---
         if (name === "read_database_rows") {
             try {
-                const response = await notion.databases.query({
-                    database_id: args.pageId
-                });
-
+                const response = await notion.databases.query({ database_id: args.pageId });
                 if (response.results.length === 0) {
-                    console.log("⚠️ 小克尝试读取表格，但该表格里没有任何数据。");
-                    return { content: [{ type: "text", text: "该数据库里面完全没有任何数据行（是空的）。" }] };
+                    return { content: [{ type: "text", text: "该数据库目前为空。" }] };
                 }
 
                 let resultText = "【数据库所有行内容如下】\n";
@@ -122,41 +124,10 @@ app.get("/mcp", async (req, res) => {
                             else if (p.type === 'checkbox') val = p.checkbox ? "是" : "否";
                             else if (p.type === 'status') val = p.status?.name || "空";
                             else val = `[系统格式:${p.type}]`;
-                        } catch (e) {
-                            val = "读取错误";
-                        }
+                        } catch (e) { val = "读取错误"; }
                         resultText += `[${key}]: ${val}\n`;
                     }
                 });
 
-                console.log(`✅ 成功抓取到 ${response.results.length} 行数据库记录！`);
-                return { content: [{ type: "text", text: resultText }] };
-            } catch (error) {
-                console.log("❌ 读取失败:", error.message);
-                return { content: [{ type: "text", text: `读取数据库失败: ${error.message}` }] };
-            }
-        }
-
-        throw new Error("Unknown tool");
-    });
-
-    const transport = new SSEServerTransport("/messages", res);
-    transportSessions.set(transport.sessionId, transport);
-    res.on("close", () => transportSessions.delete(transport.sessionId));
-    await server.connect(transport);
-});
-
-app.post("/messages", async (req, res) => {
-    const sessionId = req.query.sessionId;
-    const transport = transportSessions.get(sessionId);
-    if (transport) await transport.handlePostMessage(req, res);
-    else res.status(404).send("Session Lost");
-});
-
-app.listen(port, "0.0.0.0", () => {
-    console.log(`\n================================`);
-    console.log(`✅ 进阶 MCP 服务器已启动！(V2.1 终极版)`);
-    console.log(`📡 端口: ${port}`);
-    console.log(`🤖 已包含: 智能日期识别 + 数据库动态抓取`);
-    console.log(`================================\n`);
-});
+                console.log(`✅ 已通过数据库模式读取到包含“${response.results.length}条记录”的数据！`);
+                return { content: [{ type: "text", text: resultText
