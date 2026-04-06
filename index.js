@@ -13,6 +13,7 @@ const notionToken = process.env.NOTION_API_KEY;
 const notion = new Client({ auth: notionToken });
 const transportSessions = new Map();
 
+// 提取文字的通用函数（用于纯文本页面）
 const getTxt = (b) => {
     const type = b.type;
     return b[type]?.rich_text?.map(rt => rt.plain_text).join('') || "";
@@ -20,46 +21,31 @@ const getTxt = (b) => {
 
 app.get("/mcp", async (req, res) => {
     const server = new Server(
-        { name: "notion-mcp-advanced", version: "2.3.0" },
+        { name: "notion-mcp-ultimate", version: "2.5.0" },
         { capabilities: { tools: {} } }
     );
 
+    // --- 1. 注册所有工具 ---
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
         tools: [
             {
-                name: "append_to_notion_page",
-                description: "向指定页面追加内容",
-                inputSchema: { type: "object", properties: { pageId: { type: "string" }, content: { type: "string" } }, required: ["pageId", "content"] }
-            },
-            {
                 name: "read_full_page_content",
-                description: "【全读模式】读取页面的全部内容。",
+                description: "【纯文本模式】读取普通页面的全部内容。适用于：日记、信箱等非表格页面。",
                 inputSchema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
-            },
-            {
-                name: "read_latest_time_nodes",
-                description: "【局部读取模式】支持各种日期格式：2026.04.06、2026年4月6日、4月6日等。",
-                inputSchema: { type: "object", properties: { pageId: { type: "string" }, nodeCount: { type: "number", default: 3 } }, required: ["pageId"] }
             },
             {
                 name: "read_database_rows",
-                description: "【表格模式】读取数据库 ID，返回所有行（包含日期、步数、睡眠、生理期）。",
-                inputSchema: { type: "object", properties: { pageId: { type: "string" } }, required: ["pageId"] }
+                description: "【表格模式】读取表格/数据库的所有行。适用于：健康日记表格，获取步数、睡眠等数据。",
+                inputSchema: { type: "object", properties: { pageId: { type: "string", description: "表格的 ID" } }, required: ["pageId"] }
             }
         ]
     }));
 
+    // --- 2. 实现逻辑 ---
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { name, arguments: args } = request.params;
 
-        if (name === "append_to_notion_page") {
-            await notion.blocks.children.append({
-                block_id: args.pageId,
-                children: [{ object: 'block', type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: args.content } }] } }]
-            });
-            return { content: [{ type: "text", text: "已成功存入 Notion。" }] };
-        }
-
+        // 【逻辑一：读纯文本】
         if (name === "read_full_page_content") {
             let allBlocks = [];
             let cursor = undefined;
@@ -69,49 +55,33 @@ app.get("/mcp", async (req, res) => {
                 cursor = response.next_cursor;
             } while (cursor);
             const fullText = allBlocks.map(b => getTxt(b)).filter(t => t.trim()).join('\n\n');
-            return { content: [{ type: "text", text: fullText || "内容为空。" }] };
+            return { content: [{ type: "text", text: fullText || "页面内容为空。" }] };
         }
 
-        // --- 重点：这里升级了正则，支持多种日期格式 ---
-        if (name === "read_latest_time_nodes") {
-            const response = await notion.blocks.children.list({ block_id: args.pageId, page_size: 100 });
-            const allBlocks = response.results;
-            
-            // 这个正则可以识别：2026.04.06, 2026-04-06, 2026/04/06, 2026年4月6日, 4月6日
-            const timePattern = /(\d{4}[-./年]\d{1,2}[-./月]\d{1,2}日?)|(\d{1,2}月\d{1,2}日)/;
-            
-            let nodeIndices = [];
-            for (let i = 0; i < allBlocks.length; i++) {
-                if (timePattern.test(getTxt(allBlocks[i]))) nodeIndices.push(i);
-            }
-            const count = args.nodeCount || 3;
-            let startPos = allBlocks.length > 30 ? allBlocks.length - 30 : 0;
-            if (nodeIndices.length > 0) {
-                startPos = nodeIndices[Math.max(0, nodeIndices.length - count)];
-            }
-            const sliceText = allBlocks.slice(startPos).map(b => getTxt(b)).filter(t => t.trim()).join('\n\n');
-            return { content: [{ type: "text", text: sliceText }] };
-        }
-
+        // 【逻辑二：读表格数据】—— 专门解决你担心的“看不见表格”问题
         if (name === "read_database_rows") {
             try {
-                const response = await notion.databases.query({ database_id: args.pageId });
-                let resultText = "【数据库行内容】\n";
+                const response = await notion.databases.query({
+                    database_id: args.pageId,
+                    sorts: [{ property: '日期', direction: 'descending' }] // 按日期从新到旧排
+                });
+
+                if (response.results.length === 0) return { content: [{ type: "text", text: "表格是空的。" }] };
+
+                let resultText = "【发现表格数据如下】\n";
                 response.results.forEach((page, i) => {
-                    resultText += `\n条目 ${i+1}:\n`;
-                    for (const key in page.properties) {
-                        const p = page.properties[key];
-                        let val = "空";
-                        if (p.type === 'title') val = p.title?.[0]?.plain_text || "空";
-                        else if (p.type === 'rich_text') val = p.rich_text?.[0]?.plain_text || "空";
-                        else if (p.type === 'number') val = p.number ?? "空";
-                        else if (p.type === 'date') val = p.date?.start || "空";
-                        resultText += `[${key}]: ${val} `;
-                    }
+                    const p = page.properties;
+                    // 自动抓取：日期、步数、睡眠时长、生理期（名字对上就能读）
+                    const date = p['日期']?.title?.[0]?.plain_text || p['日期']?.date?.start || "空";
+                    const steps = p['步数']?.number ?? "空";
+                    const sleep = p['睡眠时长']?.number ?? "空";
+                    const period = p['生理期']?.rich_text?.[0]?.plain_text || "空";
+
+                    resultText += `[${date}] 步数:${steps} | 睡眠:${sleep}h | 生理期:${period}\n`;
                 });
                 return { content: [{ type: "text", text: resultText }] };
             } catch (e) {
-                return { content: [{ type: "text", text: "读表失败: " + e.message }] };
+                return { content: [{ type: "text", text: "表格读取失败，请确认这是个表格 ID 且已授权连接。" }] };
             }
         }
         throw new Error("Unknown tool");
@@ -131,5 +101,5 @@ app.post("/messages", async (req, res) => {
 });
 
 app.listen(port, "0.0.0.0", () => {
-    console.log(`✅ 服务器启动成功！端口: ${port}`);
+    console.log(`✅ 全能服务器启动！端口: ${port}`);
 });
