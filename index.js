@@ -21,7 +21,7 @@ const getTxt = (b) => {
 
 app.get("/mcp", async (req, res) => {
     const server = new Server(
-        { name: "notion-mcp-advanced", version: "1.4.0" },
+        { name: "notion-mcp-advanced", version: "1.5.0" },
         { capabilities: { tools: {} } }
     );
 
@@ -57,6 +57,20 @@ app.get("/mcp", async (req, res) => {
                     },
                     required: ["pageId"]
                 }
+            },
+            // 👇 这是咱们今晚新加的“表格读取”工具
+            {
+                name: "read_health_database",
+                description: "【表格模式】专门用于读取健康日记表格，获取最近几天的睡眠、步数和生理期记录。",
+                inputSchema: {
+                    type: "object",
+                    properties: { 
+                        databaseId: { type: "string", description: "健康日记的表格 32 位 ID" },
+                        limit: { type: "number", default: 7, description: "需要读取的最近天数，默认 7 天" }
+                    },
+                    // 为了方便，不强制要求每次都传 ID，我们在下面写了默认值
+                    required: [] 
+                }
             }
         ]
     }));
@@ -78,7 +92,6 @@ app.get("/mcp", async (req, res) => {
         if (name === "read_full_page_content") {
             let allBlocks = [];
             let cursor = undefined;
-            // 循环翻页，确保读到大模块里的所有内容（最多支持1000个block，防止内存溢出）
             let loop = 0;
             do {
                 const response = await notion.blocks.children.list({ block_id: args.pageId, start_cursor: cursor });
@@ -95,7 +108,6 @@ app.get("/mcp", async (req, res) => {
         if (name === "read_latest_time_nodes") {
             let allBlocks = [];
             let cursor = undefined;
-            // 优先抓取底部内容
             const response = await notion.blocks.children.list({ block_id: args.pageId, page_size: 100 });
             allBlocks = response.results;
 
@@ -106,7 +118,6 @@ app.get("/mcp", async (req, res) => {
             }
 
             const count = args.nodeCount || 3;
-            // 如果没找到日期，保底读最后 30 行；找到了，就从倒数第 N 个日期开始切
             let startPos = allBlocks.length > 30 ? allBlocks.length - 30 : 0;
             if (nodeIndices.length > 0) {
                 startPos = nodeIndices[Math.max(0, nodeIndices.length - count)];
@@ -114,6 +125,41 @@ app.get("/mcp", async (req, res) => {
 
             const sliceText = allBlocks.slice(startPos).map(b => getTxt(b)).filter(t => t.trim()).join('\n\n');
             return { content: [{ type: "text", text: sliceText }] };
+        }
+
+        // 👇 【模式三：表格读取模式（健康日记专用）】
+        if (name === "read_health_database") {
+            // 这里已经帮你把刚跑通的那个表格 ID 默认填上了，小克即便不知道 ID 也能读
+            const dbId = args?.databaseId || '70c361d3dd364c7e8daa2f34f4250e4c';
+            const limit = args?.limit || 7;
+
+            try {
+                const response = await notion.databases.query({
+                    database_id: dbId,
+                    sorts: [{ property: '日期', direction: 'descending' }],
+                    page_size: limit,
+                });
+
+                if (response.results.length === 0) {
+                    return { content: [{ type: "text", text: "目前的健康记录是空的。" }] };
+                }
+
+                let claudeReadableText = "【近期健康状态记录】\n";
+                response.results.forEach(page => {
+                    const props = page.properties;
+                    // 兼容 Title 格式和 Date 格式的日期
+                    const dateStr = props['日期']?.title?.[0]?.plain_text || props['日期']?.date?.start || '未知日期';
+                    const steps = props['步数']?.number || 0;
+                    const sleep = props['睡眠时长']?.number || 0;
+                    const period = props['生理期']?.rich_text?.[0]?.plain_text || '无';
+
+                    claudeReadableText += `[${dateStr}] 睡眠：${sleep}小时 | 步数：${steps}步 | 生理期状态：${period}\n`;
+                });
+
+                return { content: [{ type: "text", text: claudeReadableText }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: `读取健康表格失败: ${error.message} (请确认小克的集成已在 Notion 表格页面右上角的 Connections 中获得授权)` }] };
+            }
         }
 
         throw new Error("Unknown tool");
@@ -133,5 +179,5 @@ app.post("/messages", async (req, res) => {
 });
 
 app.listen(port, "0.0.0.0", () => {
-    console.log(`进阶双模服务器已启动，端口: ${port}`);
+    console.log(`进阶三模服务器已启动，端口: ${port} (包含健康表格读取)`);
 });
