@@ -20,7 +20,7 @@ const getTxt = (b) => {
 
 app.get("/mcp", async (req, res) => {
     const server = new Server(
-        { name: "notion-mcp-advanced", version: "2.0.0" },
+        { name: "notion-mcp-advanced", version: "2.1.0" },
         { capabilities: { tools: {} } }
     );
 
@@ -38,7 +38,7 @@ app.get("/mcp", async (req, res) => {
             },
             {
                 name: "read_latest_time_nodes",
-                description: "【局部读取模式】读取最近 N 个时间节点内容。",
+                description: "【局部读取模式】读取最近 N 个时间节点内容（已支持万能日期格式识别）。",
                 inputSchema: { type: "object", properties: { pageId: { type: "string" }, nodeCount: { type: "number", default: 3 } }, required: ["pageId"] }
             },
             {
@@ -77,7 +77,10 @@ app.get("/mcp", async (req, res) => {
         if (name === "read_latest_time_nodes") {
             const response = await notion.blocks.children.list({ block_id: args.pageId, page_size: 100 });
             const allBlocks = response.results;
-            const timePattern = /\d{4}\.\d{2}\.\d{2}/; 
+            
+            // ！！！已经替换好的：万能日期识别代码 ！！！
+            const timePattern = /(\d{4}[-./年]\d{1,2}[-./月]\d{1,2}日?)|(\d{1,2}月\d{1,2}日)/; 
+            
             let nodeIndices = [];
             for (let i = 0; i < allBlocks.length; i++) {
                 if (timePattern.test(getTxt(allBlocks[i]))) nodeIndices.push(i);
@@ -103,7 +106,6 @@ app.get("/mcp", async (req, res) => {
                 }
 
                 let resultText = "【数据库所有行内容如下】\n";
-                // 动态抓取所有列，不论列名是什么
                 response.results.forEach((page, index) => {
                     resultText += `\n--- 第 ${index + 1} 行记录 ---\n`;
                     for (const key in page.properties) {
@@ -127,7 +129,7 @@ app.get("/mcp", async (req, res) => {
                     }
                 });
 
-                console.log(`✅ 成功读取了表格数据，共抓取到 ${response.results.length} 行，已发给小克！`);
+                console.log(`✅ 成功抓取到 ${response.results.length} 行数据库记录！`);
                 return { content: [{ type: "text", text: resultText }] };
             } catch (error) {
                 console.log("❌ 读取失败:", error.message);
@@ -153,8 +155,8 @@ app.post("/messages", async (req, res) => {
 
 app.listen(port, "0.0.0.0", () => {
     console.log(`\n================================`);
-    console.log(`✅ 进阶 MCP 服务器已启动！`);
+    console.log(`✅ 进阶 MCP 服务器已启动！(V2.1 终极版)`);
     console.log(`📡 端口: ${port}`);
-    console.log(`🤖 等待小克发送请求... (请去 Msty 客户端跟小克对话)`);
+    console.log(`🤖 已包含: 智能日期识别 + 数据库动态抓取`);
     console.log(`================================\n`);
 });
