@@ -39,7 +39,7 @@ app.get("/mcp", async (req, res) => {
             },
             {
                 name: "read_full_page_content",
-                description: "【全读模式】读取页面的全部内容。适用于：输入库、小默契、歌单、情侣清单。",
+                description: "【全读模式】读取页面的全部内容。适用于普通纯文本页面。",
                 inputSchema: {
                     type: "object",
                     properties: { pageId: { type: "string" } },
@@ -48,28 +48,26 @@ app.get("/mcp", async (req, res) => {
             },
             {
                 name: "read_latest_time_nodes",
-                description: "【局部读取模式】从底部向上读取最近 N 个 2026.04.05 格式的时间节点内容。适用于：信箱、日记、记忆库。",
+                description: "【局部读取模式】从底部向上读取最近 N 个时间节点内容。适用于信箱、日记等。",
                 inputSchema: {
                     type: "object",
                     properties: { 
                         pageId: { type: "string" }, 
-                        nodeCount: { type: "number", default: 3, description: "需要读取的时间节点数量" } 
+                        nodeCount: { type: "number", default: 3 } 
                     },
                     required: ["pageId"]
                 }
             },
-            // 👇 这是咱们今晚新加的“表格读取”工具
+            // 👇 这是按总监要求新增的工具
             {
-                name: "read_health_database",
-                description: "【表格模式】专门用于读取健康日记表格，获取最近几天的睡眠、步数和生理期记录。",
+                name: "read_database_rows",
+                description: "传入数据库/表格的页面ID，返回数据库里所有行的内容（包含日期、步数、睡眠、生理期等字段）。",
                 inputSchema: {
                     type: "object",
                     properties: { 
-                        databaseId: { type: "string", description: "健康日记的表格 32 位 ID" },
-                        limit: { type: "number", default: 7, description: "需要读取的最近天数，默认 7 天" }
+                        pageId: { type: "string", description: "需要查询的数据库页面 ID (Database ID)" } 
                     },
-                    // 为了方便，不强制要求每次都传 ID，我们在下面写了默认值
-                    required: [] 
+                    required: ["pageId"]
                 }
             }
         ]
@@ -107,7 +105,6 @@ app.get("/mcp", async (req, res) => {
         // 【模式二：时间节点局部读】
         if (name === "read_latest_time_nodes") {
             let allBlocks = [];
-            let cursor = undefined;
             const response = await notion.blocks.children.list({ block_id: args.pageId, page_size: 100 });
             allBlocks = response.results;
 
@@ -127,38 +124,36 @@ app.get("/mcp", async (req, res) => {
             return { content: [{ type: "text", text: sliceText }] };
         }
 
-        // 👇 【模式三：表格读取模式（健康日记专用）】
-        if (name === "read_health_database") {
-            // 这里已经帮你把刚跑通的那个表格 ID 默认填上了，小克即便不知道 ID 也能读
-            const dbId = args?.databaseId || '70c361d3dd364c7e8daa2f34f4250e4c';
-            const limit = args?.limit || 7;
-
+        // 👇 【按总监要求的数据库读取模式】
+        if (name === "read_database_rows") {
             try {
+                // 使用总监传进来的 pageId 去查询表格
                 const response = await notion.databases.query({
-                    database_id: dbId,
-                    sorts: [{ property: '日期', direction: 'descending' }],
-                    page_size: limit,
+                    database_id: args.pageId,
+                    // 默认按日期排个序，让小克先看到最新的
+                    sorts: [{ property: '日期', direction: 'descending' }]
                 });
 
                 if (response.results.length === 0) {
-                    return { content: [{ type: "text", text: "目前的健康记录是空的。" }] };
+                    return { content: [{ type: "text", text: "该数据库目前为空或没有读取到数据。" }] };
                 }
 
-                let claudeReadableText = "【近期健康状态记录】\n";
+                let resultText = "【数据库行内容如下】\n";
+                
                 response.results.forEach(page => {
                     const props = page.properties;
-                    // 兼容 Title 格式和 Date 格式的日期
-                    const dateStr = props['日期']?.title?.[0]?.plain_text || props['日期']?.date?.start || '未知日期';
+                    // 动态抓取字段，如果某一天没填也不会报错
+                    const dateStr = props['日期']?.title?.[0]?.plain_text || props['日期']?.date?.start || '空';
                     const steps = props['步数']?.number || 0;
                     const sleep = props['睡眠时长']?.number || 0;
-                    const period = props['生理期']?.rich_text?.[0]?.plain_text || '无';
+                    const period = props['生理期']?.rich_text?.[0]?.plain_text || '空';
 
-                    claudeReadableText += `[${dateStr}] 睡眠：${sleep}小时 | 步数：${steps}步 | 生理期状态：${period}\n`;
+                    resultText += `日期: ${dateStr} | 步数: ${steps} | 睡眠时长: ${sleep} | 生理期: ${period}\n`;
                 });
 
-                return { content: [{ type: "text", text: claudeReadableText }] };
+                return { content: [{ type: "text", text: resultText }] };
             } catch (error) {
-                return { content: [{ type: "text", text: `读取健康表格失败: ${error.message} (请确认小克的集成已在 Notion 表格页面右上角的 Connections 中获得授权)` }] };
+                return { content: [{ type: "text", text: `读取数据库失败: ${error.message} (请检查 ID 是否正确，且小克是否获得了该页面的 Connections 授权)` }] };
             }
         }
 
@@ -179,5 +174,5 @@ app.post("/messages", async (req, res) => {
 });
 
 app.listen(port, "0.0.0.0", () => {
-    console.log(`进阶三模服务器已启动，端口: ${port} (包含健康表格读取)`);
+    console.log(`进阶服务器已启动，端口: ${port} (已加入传入 pageId 读取所有行的工具)`);
 });
