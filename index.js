@@ -130,4 +130,31 @@ app.get("/mcp", async (req, res) => {
                 });
 
                 console.log(`✅ 已通过数据库模式读取到包含“${response.results.length}条记录”的数据！`);
-                return { content: [{ type: "text", text: resultText
+                return { content: [{ type: "text", text: resultText }] };
+            } catch (error) {
+                return { content: [{ type: "text", text: `读取数据库失败: ${error.message}` }] };
+            }
+        }
+
+        throw new Error("Unknown tool");
+    });
+
+    const transport = new SSEServerTransport("/messages", res);
+    transportSessions.set(transport.sessionId, transport);
+    res.on("close", () => transportSessions.delete(transport.sessionId));
+    await server.connect(transport);
+});
+
+app.post("/messages", async (req, res) => {
+    const sessionId = req.query.sessionId;
+    const transport = transportSessions.get(sessionId);
+    if (transport) await transport.handlePostMessage(req, res);
+    else res.status(404).send("Session Lost");
+});
+
+app.listen(port, "0.0.0.0", () => {
+    console.log(`\n================================`);
+    console.log(`✅ 进阶服务器 V2.2 已启动！`);
+    console.log(`🤖 已经能够识别“2026年4月6日”这种中文日期了！`);
+    console.log(`================================\n`);
+});
