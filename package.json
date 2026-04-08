@@ -1,7 +1,7 @@
 {
-  "name": "notion-gmail-mcp",
+  "name": "notion-sse-mcp",
   "version": "1.0.0",
-  "description": "Notion + Gmail MCP Server for Claude",
+  "description": "Notion MCP Server for Claude",
   "type": "module",
   "main": "index.js",
   "engines": {
@@ -14,7 +14,6 @@
     "@modelcontextprotocol/sdk": "^1.0.1",
     "@notionhq/client": "^2.2.14",
     "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "googleapis": "^144.0.0"
+    "cors": "^2.8.5"
   }
 }
