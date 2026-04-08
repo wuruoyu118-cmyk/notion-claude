@@ -5,11 +5,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Client } from "@notionhq/client";
 import { google } from "googleapis";
-import { readFileSync, writeFileSync } from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -30,29 +26,15 @@ const getTxt = (b) => {
 // ── Gmail ─────────────────────────────────────────────────────────────────────
 
 function getGmailService() {
-  const tokenPath = path.join(__dirname, "token.json");
-  const tokenData = JSON.parse(readFileSync(tokenPath, "utf-8"));
-
   const oauth2Client = new google.auth.OAuth2(
-    tokenData.client_id,
-    tokenData.client_secret,
-    tokenData.token_uri
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    "https://oauth2.googleapis.com/token"
   );
 
   oauth2Client.setCredentials({
-    access_token: tokenData.token,
-    refresh_token: tokenData.refresh_token,
-    expiry_date: tokenData.expiry ? new Date(tokenData.expiry).getTime() : undefined,
-  });
-
-  oauth2Client.on("tokens", (tokens) => {
-    if (tokens.access_token) {
-      tokenData.token = tokens.access_token;
-      if (tokens.expiry_date) {
-        tokenData.expiry = new Date(tokens.expiry_date).toISOString();
-      }
-      writeFileSync(tokenPath, JSON.stringify(tokenData, null, 2));
-    }
+    access_token: process.env.GMAIL_TOKEN,
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN,
   });
 
   return google.gmail({ version: "v1", auth: oauth2Client });
